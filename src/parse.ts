@@ -1,9 +1,17 @@
 // Lightweight PromQL extraction (not a full parser): metric selectors, matchers,
 // functions, and aggregation grouping labels.
 export interface Matcher { label: string; op: string; value: string; }
-export interface Selector { metric: string; matchers: Matcher[]; range?: string; }
+export interface Selector {
+  metric: string;
+  matchers: Matcher[];
+  /** The window duration of a range/subquery vector, e.g. "5m" (the part before any `:`). */
+  range?: string;
+  /** True when the bracket was a subquery (`[5m:1m]`) rather than a plain range vector. */
+  subquery?: boolean;
+}
 
-const SELECTOR = /([a-zA-Z_:][a-zA-Z0-9_:]*)\s*(\{[^}]*\})?(\[[0-9]+[smhdwy]\])?/g;
+// The bracket allows compound durations (`1h30m`) and subquery syntax (`5m:1m`, `5m:`).
+const SELECTOR = /([a-zA-Z_:][a-zA-Z0-9_:]*)\s*(\{[^}]*\})?(\[[0-9smhdwy:]+\])?/g;
 const MATCHER = /([a-zA-Z_][a-zA-Z0-9_]*)\s*(=~|!~|!=|=)\s*"([^"]*)"/g;
 
 // Label-list clauses (`by (a,b)`, `on (x)`, `group_left(code)`, …) hold labels, not
@@ -26,7 +34,14 @@ export function parseSelectors(query: string): Selector[] {
       MATCHER.lastIndex = 0;
       while ((mm = MATCHER.exec(m[2]))) matchers.push({ label: mm[1], op: mm[2], value: mm[3] });
     }
-    out.push({ metric, matchers, range: m[3] ? m[3].slice(1, -1) : undefined });
+    let range: string | undefined;
+    let subquery = false;
+    if (m[3]) {
+      const inner = m[3].slice(1, -1);
+      subquery = inner.includes(":");
+      range = inner.split(":")[0] || undefined;
+    }
+    out.push({ metric, matchers, range, subquery });
   }
   return out;
 }
@@ -40,11 +55,16 @@ export const RANGE_FUNCTIONS = new Set([
   "present_over_time", "mad_over_time", "absent_over_time",
 ]);
 
-export const FUNCTIONS = new Set([
-  ...RANGE_FUNCTIONS,
-  // aggregations
+// Aggregation operators — they collapse series and, unless told otherwise via
+// `by`/`without`, drop every label (which is what breaks histogram_quantile).
+export const AGGREGATIONS = new Set([
   "sum", "avg", "min", "max", "count", "count_values", "stddev", "stdvar",
   "topk", "bottomk", "quantile", "group", "limitk", "limit_ratio",
+]);
+
+export const FUNCTIONS = new Set([
+  ...RANGE_FUNCTIONS,
+  ...AGGREGATIONS,
   // selection / transformation
   "histogram_quantile", "histogram_count", "histogram_sum", "histogram_fraction",
   "label_replace", "label_join", "sort", "sort_desc", "sort_by_label", "sort_by_label_desc",
@@ -64,17 +84,27 @@ export function functionsUsed(query: string): Set<string> {
   return used;
 }
 
+/** Every label named in any `by(...)` clause in the query, de-duplicated. */
 export function groupingLabels(query: string): string[] {
-  const m = query.match(/\bby\s*\(([^)]*)\)/);
-  if (!m) return [];
-  return m[1].split(",").map((s) => s.trim()).filter(Boolean);
+  const labels: string[] = [];
+  for (const m of query.matchAll(/\bby\s*\(([^)]*)\)/g)) {
+    for (const l of m[1].split(",").map((s) => s.trim()).filter(Boolean)) labels.push(l);
+  }
+  return [...new Set(labels)];
 }
 
-const UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800, y: 31536000 };
+const UNIT_SECONDS: Record<string, number> = {
+  ms: 0.001, s: 1, m: 60, h: 3600, d: 86400, w: 604800, y: 31536000,
+};
 
-/** Convert a single-unit PromQL duration like "5m" or "7d" to seconds (0 if unparseable). */
+/** Convert a PromQL duration to seconds, including compound forms like "1h30m"
+ * (0 if unparseable). */
 export function durationSeconds(range: string): number {
-  const m = /^([0-9]+)([smhdwy])$/.exec(range.trim());
-  if (!m) return 0;
-  return parseInt(m[1], 10) * UNIT_SECONDS[m[2]];
+  const r = range.trim();
+  if (!/^([0-9]+(?:ms|[smhdwy]))+$/.test(r)) return 0;
+  let total = 0;
+  for (const m of r.matchAll(/([0-9]+)(ms|[smhdwy])/g)) {
+    total += parseInt(m[1], 10) * UNIT_SECONDS[m[2]];
+  }
+  return total;
 }

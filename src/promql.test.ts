@@ -32,11 +32,23 @@ describe("parse", () => {
     expect(groupingLabels("sum(rate(x[5m])) by (job, instance)")).toEqual(["job", "instance"]);
   });
 
-  it("parses durations to seconds", () => {
+  it("parses durations to seconds, including compound forms", () => {
     expect(durationSeconds("5m")).toBe(300);
     expect(durationSeconds("1d")).toBe(86400);
     expect(durationSeconds("2w")).toBe(1209600);
+    expect(durationSeconds("1h30m")).toBe(5400);
     expect(durationSeconds("bogus")).toBe(0);
+  });
+
+  it("captures the window of a subquery range and marks it", () => {
+    const s = parseSelectors("max_over_time(node_load1[1h:5m])");
+    const sub = s.find((x) => x.subquery);
+    expect(sub?.range).toBe("1h");
+    expect(sub?.subquery).toBe(true);
+  });
+
+  it("collects grouping labels across every by() clause", () => {
+    expect(groupingLabels("sum(a) by (job) / sum(b) by (pod)")).toEqual(["job", "pod"]);
   });
 });
 
@@ -76,6 +88,42 @@ describe("lint", () => {
   it("does not emit phantom no-matchers findings for grouping labels", () => {
     // `by (job)` must not be linted as a bare metric named 'job'.
     expect(rules('sum(rate(http_requests_total{job="api"}[5m])) by (job)').has("no-matchers")).toBe(false);
+  });
+
+  it("flags histogram/summary _count and _sum as counters", () => {
+    expect(rules("http_request_duration_seconds_count").has("counter-without-rate")).toBe(true);
+    expect(rules("http_request_duration_seconds_sum").has("counter-without-rate")).toBe(true);
+    expect(rules("rate(http_request_duration_seconds_count[5m])").has("counter-without-rate")).toBe(false);
+  });
+
+  it("flags histogram_quantile on raw (un-rated) buckets", () => {
+    expect(rules("histogram_quantile(0.9, http_request_duration_seconds_bucket)")
+      .has("histogram-quantile-raw-buckets")).toBe(true);
+    // properly rated + kept le -> clean
+    const good = "histogram_quantile(0.9, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))";
+    expect(rules(good).has("histogram-quantile-raw-buckets")).toBe(false);
+    expect(rules(good).has("histogram-quantile-missing-le")).toBe(false);
+    expect(lint(good).filter((f) => f.severity === "high")).toEqual([]);
+  });
+
+  it("flags histogram_quantile that aggregates away the le label", () => {
+    const bad = "histogram_quantile(0.9, sum(rate(http_request_duration_seconds_bucket[5m])))";
+    expect(rules(bad).has("histogram-quantile-missing-le")).toBe(true);
+  });
+
+  it("does not flag missing-le when buckets are not aggregated", () => {
+    const ok = "histogram_quantile(0.9, rate(http_request_duration_seconds_bucket[5m]))";
+    expect(rules(ok).has("histogram-quantile-missing-le")).toBe(false);
+    expect(rules(ok).has("histogram-quantile-raw-buckets")).toBe(false);
+  });
+
+  it("flags a rate window shorter than 1m", () => {
+    expect(rules("rate(http_requests_total[30s])").has("short-rate-window")).toBe(true);
+    expect(rules("rate(http_requests_total[1m])").has("short-rate-window")).toBe(false);
+  });
+
+  it("flags a long range expressed as a compound duration", () => {
+    expect(rules("rate(http_requests_total[1d12h])").has("large-range-vector")).toBe(true);
   });
 
   it("clean query has no high findings", () => {
