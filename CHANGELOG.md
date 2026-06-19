@@ -3,6 +3,18 @@
 All notable changes are documented here, following
 [Keep a Changelog](https://keepachangelog.com/) and [SemVer](https://semver.org/).
 
+## [0.3.0]
+
+### Added
+- **`aggregation-inside-rate`** (high) — catches `rate(sum(...))` / `increase(avg(...))`, the
+  classic backwards order; the per-series rate must be computed first (`sum(rate(...))`).
+- **`delta-on-counter`** (medium) — `delta()`/`idelta()` are gauge functions; on a monotonic
+  counter they misread resets, so use `increase()`/`rate()`.
+- **`regex-no-metachars`** (low) — a `=~`/`!~` matcher whose value has no regex
+  metacharacters is just a slower exact match; suggests `=`/`!=`.
+
+These were verified against idiomatic queries for zero high-severity false positives.
+
 ## [0.2.0]
 
 ### Added

@@ -57,10 +57,13 @@ estimateCardinality("sum(rate(x[5m])) by (job, pod)", {}, { job: 5, pod: 200 });
 | HIGH | `high-cardinality-grouping` | `by (pod/instance/id/…)` — checked across *every* `by()` clause |
 | HIGH | `histogram-quantile-raw-buckets` | `histogram_quantile()` over raw `_bucket` series instead of their `rate()` |
 | HIGH | `histogram-quantile-missing-le` | aggregating buckets without keeping `le` (`by (le)`) — silently wrong percentiles |
+| HIGH | `aggregation-inside-rate` | `rate(sum(...))` — backwards; aggregate the per-series rates (`sum(rate(...))`) |
 | MEDIUM | `match-all-regex` | `label=~".*"` / `".+"` |
+| MEDIUM | `delta-on-counter` | `delta()`/`idelta()` on a counter (those are for gauges) — use `increase()`/`rate()` |
 | MEDIUM | `range-without-function` | a `[5m]` range vector not reduced by a range function |
 | MEDIUM | `large-range-vector` | a range vector longer than a day (use a recording rule) |
 | LOW | `short-rate-window` | `rate()` over a window under 1m — too few samples to be reliable |
+| LOW | `regex-no-metachars` | `label=~"plain"` with no regex metacharacters — use `=` for a faster exact match |
 | LOW | `no-matchers` | a bare metric with no label matchers |
 
 The two `histogram-quantile-*` rules catch the single most common Prometheus mistake — `histogram_quantile(0.9, sum(rate(x_bucket[5m])))` (the `le` label is gone, so the result is meaningless) or feeding it raw, un-rated buckets.
@@ -70,7 +73,7 @@ The extractor pulls metric selectors, matchers, functions, and `by(...)` labels 
 ## Development
 
 ```bash
-npm install && npm test    # 28 tests
+npm install && npm test    # 31 tests
 npm run build              # tsc, clean
 ```
 

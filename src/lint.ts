@@ -47,6 +47,11 @@ export function lint(query: string): Finding[] {
       if (m.op === "=~" && (m.value === ".*" || m.value === ".+" || m.value === "")) {
         add({ severity: "medium", rule: "match-all-regex",
           message: `${s.metric}{${m.label}=~"${m.value}"} matches everything — drop the matcher or narrow it.` });
+      } else if ((m.op === "=~" || m.op === "!~") && m.value !== "" && !/[.*+?()[\]{}|^$\\]/.test(m.value)) {
+        // a regex matcher with no metacharacters is just a slower exact match
+        const exact = m.op === "=~" ? "=" : "!=";
+        add({ severity: "low", rule: "regex-no-metachars",
+          message: `${s.metric}{${m.label}${m.op}"${m.value}"} has no regex metacharacters — use '${exact}' for a faster exact match.` });
       }
     }
 
@@ -99,6 +104,19 @@ export function lint(query: string): Finding[] {
   if (selectors.some((s) => s.range && !s.subquery) && !hasRangeFn) {
     add({ severity: "medium", rule: "range-without-function",
       message: "A range vector ([5m]) must be reduced by a function (rate/increase/*_over_time)." });
+  }
+
+  // rate(sum(...)) is backwards: aggregate the per-series rates, not the other way round.
+  const aggNames = [...AGGREGATIONS].join("|");
+  if (new RegExp(String.raw`\b(?:rate|irate|increase)\s*\(\s*(?:${aggNames})\b`).test(query)) {
+    add({ severity: "high", rule: "aggregation-inside-rate",
+      message: "rate()/increase() wraps an aggregation — compute it the other way (`sum(rate(...))`), since rate() needs per-series counters." });
+  }
+
+  // delta()/idelta() are for gauges; on a counter they misread resets — use increase()/rate().
+  if (/\b(?:delta|idelta)\s*\(/.test(query) && selectors.some((s) => counterKind(s.metric) !== null)) {
+    add({ severity: "medium", rule: "delta-on-counter",
+      message: "delta()/idelta() is for gauges — on a monotonic counter it misreads resets; use increase() or rate() instead." });
   }
 
   out.sort((a, b) => sev(a.severity) - sev(b.severity));

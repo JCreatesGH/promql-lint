@@ -126,6 +126,31 @@ describe("lint", () => {
     expect(rules("rate(http_requests_total[1d12h])").has("large-range-vector")).toBe(true);
   });
 
+  it("flags rate() wrapping an aggregation (backwards order)", () => {
+    expect(rules("rate(sum(http_requests_total)[5m:])").has("aggregation-inside-rate")).toBe(true);
+    expect(rules("increase(avg by (job) (http_requests_total)[5m:])").has("aggregation-inside-rate")).toBe(true);
+    // the correct order is clean
+    expect(rules("sum(rate(http_requests_total[5m]))").has("aggregation-inside-rate")).toBe(false);
+    // a metric that merely starts with an aggregation name is not a false positive
+    expect(rules("rate(sum_squared_total[5m])").has("aggregation-inside-rate")).toBe(false);
+  });
+
+  it("flags a regex matcher with no metacharacters", () => {
+    expect(rules('http_requests_total{job=~"api"}').has("regex-no-metachars")).toBe(true);
+    expect(rules('http_requests_total{job!~"api"}').has("regex-no-metachars")).toBe(true);
+    // a real regex value is left alone
+    expect(rules('http_requests_total{code=~"5.."}').has("regex-no-metachars")).toBe(false);
+    expect(rules('http_requests_total{job=~"api|web"}').has("regex-no-metachars")).toBe(false);
+    expect(rules('http_requests_total{job="api"}').has("regex-no-metachars")).toBe(false);
+  });
+
+  it("flags delta()/idelta() applied to a counter", () => {
+    expect(rules("delta(http_requests_total[5m])").has("delta-on-counter")).toBe(true);
+    expect(rules("idelta(http_requests_total[5m])").has("delta-on-counter")).toBe(true);
+    // delta on a gauge is fine
+    expect(rules("delta(cpu_temperature_celsius[5m])").has("delta-on-counter")).toBe(false);
+  });
+
   it("clean query has no high findings", () => {
     const q = 'sum(rate(http_requests_total{job="api"}[5m])) by (job)';
     expect(lint(q).filter((f) => f.severity === "high")).toEqual([]);
